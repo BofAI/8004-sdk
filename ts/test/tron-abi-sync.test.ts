@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { SDK, type ExternalSigner } from "../src/index.js";
+import { SDK } from "../src/index.js";
 
 const abiPath = new URL("../resource/contract_abis.json", import.meta.url);
 
@@ -15,12 +15,7 @@ test("TRON Registry ABIs match the official EVM v2 ABIs", async () => {
 });
 
 test("TRON approve sends the official address,uint256 argument order", async () => {
-  const signer: ExternalSigner = {
-    address: "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
-    async signTransaction(transaction) {
-      return transaction;
-    },
-  };
+  const signer = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   const sdk = new SDK({ network: "tron:nile", rpcUrl: "http://unused.invalid", signer });
   const calls: unknown[][] = [];
   const approve = (...args: unknown[]) => ({
@@ -46,12 +41,7 @@ test("TRON approve sends the official address,uint256 argument order", async () 
 });
 
 test("TRON register selects the canonical tuple overload and encodes positional metadata", async () => {
-  const signer: ExternalSigner = {
-    address: "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
-    async signTransaction(transaction) {
-      return transaction;
-    },
-  };
+  const signer = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   const sdk = new SDK({ network: "tron:nile", rpcUrl: "http://unused.invalid", signer });
   const calls: unknown[][] = [];
   const registerWithMetadata = (...args: unknown[]) => ({

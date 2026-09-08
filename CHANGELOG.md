@@ -15,8 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the deployed TRC-8004 v2 contracts on Mainnet, Nile, and Shasta.
 - Added complete TypeScript Registry read APIs, registration overloads, and
   per-agent approval management.
-- Added an `ExternalSigner` adapter for EVM and TRON writes while preserving
-  private-key signer compatibility.
 
 ### Fixed
 
@@ -30,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeated confirmation waits do not upload or bind the agent URI again.
 
 ### Changed
+
+- Removed the custom external-signer extension introduced in the TypeScript
+  beta. Keep signer configuration as private-key strings; wallet integration
+  belongs in the consuming application. Registry/Agent0 compatibility changes
+  and credential encapsulation remain intact.
 
 - Added the `develop` integration branch and enforced feature, release, and
   hotfix pull request routes.

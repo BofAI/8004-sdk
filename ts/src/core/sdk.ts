@@ -9,7 +9,6 @@ import { getIdentityRegistryAbi, getReputationRegistryAbi, getValidationRegistry
 import { SubgraphClient } from "./subgraph-client.js";
 import { AgentIndexer } from "./indexer.js";
 import type {
-  ExternalSigner,
   AppendResponseParams,
   AgentSummary,
   FeedbackSearchFilters,
@@ -31,7 +30,7 @@ import type {
   ValidationSummary,
 } from "../models/types.js";
 
-const sdkSigners = new WeakMap<object, string | ExternalSigner>();
+const sdkSigners = new WeakMap<object, string>();
 
 export class SDK {
   readonly chainType: "evm" | "tron";
@@ -59,6 +58,9 @@ export class SDK {
   };
 
   constructor(config: SDKConfig) {
+    if (config.signer !== undefined && typeof config.signer !== "string") {
+      throw new TypeError("signer must be a private-key string");
+    }
     const resolved = resolveChainFromConfig(chainsJson, config.network, config.chainId, config.rpcUrl);
     if (
       typeof config.chainId === "number" &&
@@ -667,7 +669,7 @@ export async function signAgentWalletBinding(
   agentId: bigint,
   newWallet: string,
   deadline: bigint,
-  signerOverride?: string | ExternalSigner,
+  signerOverride?: string,
 ): Promise<Hex> {
   const newWalletAddress = sdk.chain.toEvmAddress(newWallet) as Hex;
   const owner = await sdk.chain.ownerOf(sdk.identityRegistry, sdk.identityRegistryAbi, agentId);
@@ -692,18 +694,11 @@ export async function signAgentWalletBinding(
     throw new Error("New wallet signature is required. Provide options.newWalletSigner or options.signature.");
   }
 
-  let signerAddress: string;
-  let signature: Hex;
-  if (typeof signer === "string") {
-    const normalizedKey = (signer.startsWith("0x") ? signer : `0x${signer}`) as Hex;
-    const account = privateKeyToAccount(normalizedKey);
-    signerAddress = account.address;
-    signature = await account.signTypedData({ domain, types, primaryType: "AgentWalletSet", message });
-  } else {
-    signerAddress = sdk.chain.toEvmAddress(signer.address);
-    if (!signer.signTypedData) throw new Error("External signer does not support typed-data signing");
-    signature = await signer.signTypedData({ domain, types, primaryType: "AgentWalletSet", message });
-  }
+  if (typeof signer !== "string") throw new TypeError("newWalletSigner must be a private-key string");
+  const normalizedKey = (signer.startsWith("0x") ? signer : `0x${signer}`) as Hex;
+  const account = privateKeyToAccount(normalizedKey);
+  const signerAddress = account.address;
+  const signature = await account.signTypedData({ domain, types, primaryType: "AgentWalletSet", message });
   if (signerAddress.toLowerCase() !== newWalletAddress.toLowerCase()) {
     throw new Error(`newWalletSigner address (${signerAddress}) does not match newWallet (${newWalletAddress}).`);
   }
