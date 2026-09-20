@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added official ERC-8004 Registry ABI support and Base Mainnet/Base Sepolia
+  network configuration to the TypeScript SDK.
+- Synchronized the TypeScript TRON Registry ABIs and approval call order with
+  the deployed TRC-8004 v2 contracts on Mainnet, Nile, and Shasta.
+- Added complete TypeScript Registry read APIs, registration overloads, and
+  per-agent approval management.
+
 ### Fixed
 
 - Aligned Python and TypeScript parsing and serialization of ERC-8004
@@ -15,8 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minted agent ID before publishing, while retaining SDK extension fields.
 - Added chain-aware TRC-8004 registration serialization for TRON, including
   the TRC registration type and Base58 identity registry representation.
+- Made the two-stage TypeScript IPFS registration completion idempotent so
+  repeated confirmation waits do not upload or bind the agent URI again.
 
 ### Changed
+
+- Removed the custom external-signer extension introduced in the TypeScript
+  beta. Keep signer configuration as private-key strings; wallet integration
+  belongs in the consuming application. Registry/Agent0 compatibility changes
+  and credential encapsulation remain intact.
 
 - Added the `develop` integration branch and enforced feature, release, and
   hotfix pull request routes.

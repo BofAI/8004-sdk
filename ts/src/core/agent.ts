@@ -1,8 +1,5 @@
-import { recoverTypedDataAddress, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-
-import type { RegistrationFile, RegistrationResult, SetWalletOptions } from "../models/types.js";
-import type { SDK } from "./sdk.js";
+import type { MetadataEntry, RegistrationFile, RegistrationResult, SetWalletOptions } from "../models/types.js";
+import { signAgentWalletBinding, type SDK } from "./sdk.js";
 import { TransactionHandle } from "./transaction-handle.js";
 
 export class Agent {
@@ -159,16 +156,17 @@ export class Agent {
     return this.touch();
   }
 
-  async register(agentURI: string): Promise<TransactionHandle<RegistrationResult>> {
-    const tx = await this.sdk.submitRegister(agentURI);
+  async register(agentURI?: string, metadata?: MetadataEntry[]): Promise<TransactionHandle<RegistrationResult>> {
+    const resolvedAgentURI = agentURI ?? "";
+    const tx = await this.sdk.submitRegister(agentURI, metadata);
 
     return new TransactionHandle<RegistrationResult>(tx.txHash, this.sdk.chain, async (receipt) => {
       const parsed = this.sdk.chain.parseRegisteredAgentId(receipt);
       const resolved: RegistrationResult = {
-        agentURI,
+        agentURI: resolvedAgentURI,
         agentId: parsed ? `${this.sdk.chainId}:${parsed}` : undefined,
       };
-      this.registrationFile.agentURI = agentURI;
+      this.registrationFile.agentURI = resolvedAgentURI;
       this.registrationFile.agentId = resolved.agentId;
       this.touch();
       return resolved;
@@ -195,28 +193,33 @@ export class Agent {
     }
 
     const registrationTx = await this.sdk.submitRegister("");
+    let uriBinding: Promise<{ agentId: string; agentURI: string; txHash: string }> | undefined;
     return new TransactionHandle<RegistrationResult>(registrationTx.txHash, this.sdk.chain, async (receipt) => {
-      const parsed = this.sdk.chain.parseRegisteredAgentId(receipt);
-      if (parsed === undefined) {
-        throw new Error("Unable to determine registered agent ID from transaction receipt");
-      }
+      uriBinding ??= (async () => {
+        const parsed = this.sdk.chain.parseRegisteredAgentId(receipt);
+        if (parsed === undefined) {
+          throw new Error("Unable to determine registered agent ID from transaction receipt");
+        }
 
-      const agentId = `${this.sdk.chainId}:${parsed}`;
-      this.registrationFile.agentId = agentId;
+        const agentId = `${this.sdk.chainId}:${parsed}`;
+        this.registrationFile.agentId = agentId;
+        this.touch();
+
+        const uri = await this.sdk.uploadRegistrationFile(this.toJSON());
+        const uriTxHash = await this.sdk.chain.setAgentURI(
+          this.sdk.identityRegistry,
+          this.sdk.identityRegistryAbi,
+          BigInt(parsed),
+          uri,
+        );
+        return { agentId, agentURI: uri, txHash: uriTxHash };
+      })();
+      const binding = await uriBinding;
+      await this.sdk.chain.waitForTransaction(binding.txHash);
+
+      this.registrationFile.agentURI = binding.agentURI;
       this.touch();
-
-      const uri = await this.sdk.uploadRegistrationFile(this.toJSON());
-      const uriTxHash = await this.sdk.chain.setAgentURI(
-        this.sdk.identityRegistry,
-        this.sdk.identityRegistryAbi,
-        BigInt(parsed),
-        uri,
-      );
-      await this.sdk.chain.waitForTransaction(uriTxHash);
-
-      this.registrationFile.agentURI = uri;
-      this.touch();
-      return { agentId, agentURI: uri };
+      return { agentId: binding.agentId, agentURI: binding.agentURI };
     });
   }
 
@@ -267,61 +270,17 @@ export class Agent {
       return undefined;
     }
 
-    const ownerChain = await this.sdk.chain.ownerOf(this.sdk.identityRegistry, this.sdk.identityRegistryAbi, agentTokenId);
-    const ownerEvm = this.sdk.chain.toEvmAddress(ownerChain) as Hex;
-    const verifyingContract = this.sdk.chain.toEvmAddress(this.sdk.identityRegistry) as Hex;
-    const chainId = this.sdk.getTypedDataChainId();
     const deadline = BigInt(options.deadline ?? (Math.floor(Date.now() / 1000) + 60));
-
-    const domain = {
-      name: "ERC8004IdentityRegistry",
-      version: "1",
-      chainId,
-      verifyingContract,
-    } as const;
-    const types = {
-      AgentWalletSet: [
-        { name: "agentId", type: "uint256" },
-        { name: "newWallet", type: "address" },
-        { name: "owner", type: "address" },
-        { name: "deadline", type: "uint256" },
-      ],
-    } as const;
-    const message = {
-      agentId: agentTokenId,
-      newWallet: addrEvm as Hex,
-      owner: ownerEvm,
-      deadline,
-    } as const;
 
     let signature = options.signature;
     if (!signature) {
-      const signerKey = ((options.newWalletSigner ?? this.sdk.signer) || "").trim();
-      if (!signerKey) {
-        throw new Error("New wallet signature is required. Provide options.newWalletSigner or options.signature.");
-      }
-      const normalizedKey = (signerKey.startsWith("0x") ? signerKey : `0x${signerKey}`) as Hex;
-      const account = privateKeyToAccount(normalizedKey);
-      if (account.address.toLowerCase() !== addrEvm.toLowerCase()) {
-        throw new Error(`newWalletSigner address (${account.address}) does not match newWallet (${addrEvm}).`);
-      }
-      signature = await account.signTypedData({
-        domain,
-        types,
-        primaryType: "AgentWalletSet",
-        message,
-      });
-
-      const recovered = await recoverTypedDataAddress({
-        domain,
-        types,
-        primaryType: "AgentWalletSet",
-        message,
-        signature,
-      });
-      if (recovered.toLowerCase() !== addrEvm.toLowerCase()) {
-        throw new Error(`Signature verification failed: recovered ${recovered}, expected ${addrEvm}`);
-      }
+      signature = await signAgentWalletBinding(
+        this.sdk,
+        agentTokenId,
+        addrEvm,
+        deadline,
+        options.newWalletSigner,
+      );
     }
 
     const txHash = await this.sdk.chain.setAgentWallet(
@@ -404,6 +363,18 @@ export class Agent {
       this.sdk.identityRegistryAbi,
       this.sdk.chain.toChainAddress(operator),
       true,
+    );
+    return new TransactionHandle<Agent>(txHash, this.sdk.chain, async () => this);
+  }
+
+  async approve(operator: string): Promise<TransactionHandle<Agent>> {
+    if (!this.registrationFile.agentId) throw new Error("Agent must be registered first");
+    const agentTokenId = BigInt(this.registrationFile.agentId.split(":").pop() as string);
+    const txHash = await this.sdk.chain.approve(
+      this.sdk.identityRegistry,
+      this.sdk.identityRegistryAbi,
+      this.sdk.chain.toChainAddress(operator),
+      agentTokenId,
     );
     return new TransactionHandle<Agent>(txHash, this.sdk.chain, async () => this);
   }
