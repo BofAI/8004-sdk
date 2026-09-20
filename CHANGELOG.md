@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-20
+
 ### Added
 
 - Added official ERC-8004 Registry ABI support and Base Mainnet/Base Sepolia
@@ -33,13 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beta. Keep signer configuration as private-key strings; wallet integration
   belongs in the consuming application. Registry/Agent0 compatibility changes
   and credential encapsulation remain intact.
+- Updated the TypeScript runtime dependencies to current compatible releases,
+  resolving the production dependency advisories present in the beta build.
 
 - Added the `develop` integration branch and enforced feature, release, and
   hotfix pull request routes.
 - Documented synchronized TypeScript and Python version preparation on release
   and hotfix branches.
-- Corrected the TypeScript lockfile package metadata to the existing `1.1.1`
-  package version.
+- Kept the TypeScript lockfile package metadata synchronized with the package
+  manifest version.
 - Extended CI to `develop` and kept automatic Audit disabled by default while
   preserving the authorized `/audit-pr` workflow.
 - Limited Audit archives to tracked, non-symbolic-link files.
