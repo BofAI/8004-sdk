@@ -1,5 +1,6 @@
 import chainsJson from "../../resource/chains.json" with { type: "json" };
-import { keccak256, toBytes, type Abi, type Hex } from "viem";
+import { keccak256, recoverTypedDataAddress, toBytes, type Abi, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { Agent } from "./agent.js";
 import { EvmAdapter, resolveChainFromConfig, TRON_CHAIN_IDS, TronAdapter, type ChainAdapter } from "./chains.js";
@@ -15,6 +16,8 @@ import type {
   FeedbackRecord,
   FeedbackSummary,
   GiveFeedbackParams,
+  MetadataEntry,
+  OnChainFeedbackRecord,
   RegistrationFile,
   RegistrationResult,
   ReputationSummary,
@@ -24,14 +27,16 @@ import type {
   ValidationRequestParams,
   ValidationResponseParams,
   ValidationStatus,
+  ValidationSummary,
 } from "../models/types.js";
+
+const sdkSigners = new WeakMap<object, string>();
 
 export class SDK {
   readonly chainType: "evm" | "tron";
   readonly network: string;
   readonly rpcUrl: string;
   readonly chainId: number;
-  readonly signer?: string;
   readonly feeLimit: number;
 
   readonly identityRegistry: string;
@@ -53,6 +58,9 @@ export class SDK {
   };
 
   constructor(config: SDKConfig) {
+    if (config.signer !== undefined && typeof config.signer !== "string") {
+      throw new TypeError("signer must be a private-key string");
+    }
     const resolved = resolveChainFromConfig(chainsJson, config.network, config.chainId, config.rpcUrl);
     if (
       typeof config.chainId === "number" &&
@@ -68,7 +76,7 @@ export class SDK {
     this.network = resolved.resolvedNetwork;
     this.rpcUrl = resolved.rpcUrl;
     this.chainId = resolved.resolvedChainId ?? config.chainId ?? (this.chainType === "evm" ? 97 : 1);
-    this.signer = config.signer;
+    if (config.signer) sdkSigners.set(this, config.signer);
     this.feeLimit = config.feeLimit ?? 120_000_000;
 
     this.identityRegistry = resolved.contracts.identityRegistry;
@@ -80,8 +88,8 @@ export class SDK {
     this.validationRegistryAbi = getValidationRegistryAbi(this.chainType) as Abi;
 
     this.chain = this.chainType === "evm"
-      ? new EvmAdapter(this.rpcUrl, this.chainId, this.signer)
-      : new TronAdapter(this.rpcUrl, this.signer, this.feeLimit);
+      ? new EvmAdapter(this.rpcUrl, this.chainId, config.signer)
+      : new TronAdapter(this.rpcUrl, config.signer, this.feeLimit);
     this.ipfsUploader = config.ipfsUploader;
 
     this.subgraphClients = new Map<number, SubgraphClient>();
@@ -103,6 +111,7 @@ export class SDK {
       description: input.description,
       image: input.image,
       endpoints: [],
+      registrations: [],
       tags: [],
       metadata: {},
       supportedTrust: [],
@@ -142,6 +151,7 @@ export class SDK {
       description: summary?.description ?? "",
       image: summary?.image,
       endpoints: [],
+      registrations: [],
       tags: [],
       metadata: {},
       supportedTrust: [],
@@ -157,6 +167,7 @@ export class SDK {
         registrationFile.description = hydrated.description ?? registrationFile.description;
         registrationFile.image = hydrated.image ?? registrationFile.image;
         registrationFile.endpoints = hydrated.endpoints ?? registrationFile.endpoints;
+        registrationFile.registrations = hydrated.registrations ?? registrationFile.registrations;
         registrationFile.tags = hydrated.tags ?? registrationFile.tags;
         registrationFile.metadata = hydrated.metadata ?? registrationFile.metadata;
         registrationFile.supportedTrust = hydrated.supportedTrust ?? registrationFile.supportedTrust;
@@ -184,17 +195,32 @@ export class SDK {
       const res = await fetch(target, { method: "GET" });
       if (!res.ok) return undefined;
       const json = await res.json();
-      const rf = json as Partial<RegistrationFile>;
+      if (!json || typeof json !== "object") return undefined;
+      const rf = json as Partial<RegistrationFile> & {
+        type?: string;
+        services?: RegistrationFile["endpoints"];
+        x402Support?: boolean;
+      };
       return {
+        registrationType: typeof rf.type === "string" ? rf.type : undefined,
         name: typeof rf.name === "string" ? rf.name : undefined,
         description: typeof rf.description === "string" ? rf.description : undefined,
         image: typeof rf.image === "string" ? rf.image : undefined,
-        endpoints: Array.isArray(rf.endpoints) ? rf.endpoints : undefined,
+        endpoints: Array.isArray(rf.services)
+          ? rf.services
+          : Array.isArray(rf.endpoints)
+            ? rf.endpoints
+            : undefined,
+        registrations: Array.isArray(rf.registrations) ? rf.registrations : undefined,
         tags: Array.isArray(rf.tags) ? rf.tags : undefined,
         metadata: typeof rf.metadata === "object" && rf.metadata ? rf.metadata : undefined,
         supportedTrust: Array.isArray(rf.supportedTrust) ? rf.supportedTrust : undefined,
         active: typeof rf.active === "boolean" ? rf.active : undefined,
-        x402support: typeof rf.x402support === "boolean" ? rf.x402support : undefined,
+        x402support: typeof rf.x402Support === "boolean"
+          ? rf.x402Support
+          : typeof rf.x402support === "boolean"
+            ? rf.x402support
+            : undefined,
       };
     } catch {
       return undefined;
@@ -205,11 +231,39 @@ export class SDK {
     if (!this.ipfsUploader) {
       throw new Error("No ipfsUploader configured. Pass SDKConfig.ipfsUploader to use registerIPFS().");
     }
-    return await this.ipfsUploader(JSON.stringify(registrationFile, null, 2));
+
+    let registrations = registrationFile.registrations ?? [];
+    if (registrations.length === 0 && registrationFile.agentId) {
+      const agentId = Number(registrationFile.agentId.split(":").at(-1));
+      if (Number.isSafeInteger(agentId) && agentId >= 0) {
+        registrations = [{
+          agentId,
+          agentRegistry: `eip155:${this.chainId}:${this.identityRegistry}`,
+        }];
+      }
+    }
+
+    const wireRegistration = {
+      type: this.chainType === "tron"
+        ? "https://github.com/tronprotocol/tips/blob/master/tip-8004.md#registration-v1"
+        : "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+      name: registrationFile.name,
+      description: registrationFile.description,
+      image: registrationFile.image,
+      services: registrationFile.endpoints,
+      registrations,
+      supportedTrust: registrationFile.supportedTrust,
+      active: registrationFile.active,
+      x402Support: registrationFile.x402support,
+      updatedAt: registrationFile.updatedAt,
+      tags: registrationFile.tags,
+      metadata: registrationFile.metadata,
+    };
+    return await this.ipfsUploader(JSON.stringify(wireRegistration, null, 2));
   }
 
-  async submitRegister(agentURI: string): Promise<TransactionHandle<RegistrationResult>> {
-    const txHash = await this.chain.registerAgent(this.identityRegistry, this.identityRegistryAbi, agentURI);
+  async submitRegister(agentURI?: string, metadata?: MetadataEntry[]): Promise<TransactionHandle<RegistrationResult>> {
+    const txHash = await this.chain.registerAgent(this.identityRegistry, this.identityRegistryAbi, agentURI, metadata);
     return new TransactionHandle<RegistrationResult>(
       txHash,
       this.chain,
@@ -217,7 +271,7 @@ export class SDK {
         const agentNum = this.chain.parseRegisteredAgentId(receipt);
         return {
           agentId: agentNum ? `${this.chainId}:${agentNum}` : undefined,
-          agentURI,
+          agentURI: agentURI ?? "",
         };
       },
     );
@@ -232,6 +286,34 @@ export class SDK {
     if (evm === "0x0000000000000000000000000000000000000000") return undefined;
     if (wallet.toLowerCase() === "t9yd14nj9j7xab4dbgeix9h8unkkhxuwwb") return undefined;
     return this.chain.toChainAddress(wallet);
+  }
+
+  async getAgentURI(agentId: string | number): Promise<string> {
+    const { tokenId } = this.parseAgentId(agentId);
+    return await this.chain.getAgentURI(this.identityRegistry, this.identityRegistryAbi, tokenId);
+  }
+
+  async getAgentOwner(agentId: string | number): Promise<string> {
+    const { tokenId } = this.parseAgentId(agentId);
+    const owner = await this.chain.ownerOf(this.identityRegistry, this.identityRegistryAbi, tokenId);
+    return this.chain.toChainAddress(owner);
+  }
+
+  async getMetadata(agentId: string | number, key: string): Promise<Hex> {
+    const { tokenId } = this.parseAgentId(agentId);
+    return await this.chain.getMetadata(this.identityRegistry, this.identityRegistryAbi, tokenId, key);
+  }
+
+  async getApproved(agentId: string | number): Promise<string | undefined> {
+    const { tokenId } = this.parseAgentId(agentId);
+    const approved = await this.chain.getApproved(this.identityRegistry, this.identityRegistryAbi, tokenId);
+    const evm = this.chain.toEvmAddress(approved).toLowerCase();
+    if (evm === "0x0000000000000000000000000000000000000000") return undefined;
+    return this.chain.toChainAddress(approved);
+  }
+
+  async isApprovedForAll(owner: string, operator: string): Promise<boolean> {
+    return await this.chain.isApprovedForAll(this.identityRegistry, this.identityRegistryAbi, owner, operator);
   }
 
   private parseAgentId(agentIdInput: string | number): { tokenId: bigint; agentId: string } {
@@ -338,6 +420,52 @@ export class SDK {
     };
   }
 
+  async readAllFeedback(
+    agentIdInput: string | number,
+    clientAddresses: string[] = [],
+    tag1 = "",
+    tag2 = "",
+    includeRevoked = false,
+  ): Promise<OnChainFeedbackRecord[]> {
+    const { tokenId, agentId } = this.parseAgentId(agentIdInput);
+    const [clients, indexes, values, decimals, tag1s, tag2s, revoked] = await this.chain.readAllFeedback(
+      this.reputationRegistry,
+      this.reputationRegistryAbi,
+      tokenId,
+      clientAddresses,
+      tag1,
+      tag2,
+      includeRevoked,
+    );
+    return clients.map((client, index) => ({
+      agentId,
+      reviewer: this.chain.toChainAddress(client),
+      feedbackIndex: Number(indexes[index]),
+      value: Number(values[index]) / (10 ** decimals[index]),
+      valueDecimals: decimals[index],
+      tag1: tag1s[index],
+      tag2: tag2s[index],
+      isRevoked: revoked[index],
+    }));
+  }
+
+  async getResponseCount(
+    agentIdInput: string | number,
+    clientAddress: string,
+    feedbackIndex: number,
+    responders: string[] = [],
+  ): Promise<bigint> {
+    const { tokenId } = this.parseAgentId(agentIdInput);
+    return await this.chain.getResponseCount(
+      this.reputationRegistry,
+      this.reputationRegistryAbi,
+      tokenId,
+      clientAddress,
+      BigInt(feedbackIndex),
+      responders,
+    );
+  }
+
   async getReputationSummary(
     agentIdInput: string | number,
     clientAddresses: string[] = [],
@@ -379,6 +507,22 @@ export class SDK {
       summaryValueDecimals,
       averageValue,
     };
+  }
+
+  async getClients(agentIdInput: string | number): Promise<string[]> {
+    const { tokenId } = this.parseAgentId(agentIdInput);
+    const clients = await this.chain.getClients(this.reputationRegistry, this.reputationRegistryAbi, tokenId);
+    return clients.map((client) => this.chain.toChainAddress(client));
+  }
+
+  async getLastIndex(agentIdInput: string | number, clientAddress: string): Promise<bigint> {
+    const { tokenId } = this.parseAgentId(agentIdInput);
+    return await this.chain.getLastIndex(
+      this.reputationRegistry,
+      this.reputationRegistryAbi,
+      tokenId,
+      clientAddress,
+    );
   }
 
   async appendResponse(
@@ -461,6 +605,35 @@ export class SDK {
     };
   }
 
+  async getValidationSummary(
+    agentIdInput: string | number,
+    validatorAddresses: string[] = [],
+    tag = "",
+  ): Promise<ValidationSummary> {
+    const { tokenId, agentId } = this.parseAgentId(agentIdInput);
+    const [count, averageResponse] = await this.chain.getValidationSummary(
+      this.validationRegistry,
+      this.validationRegistryAbi,
+      tokenId,
+      validatorAddresses,
+      tag,
+    );
+    return { agentId, count: Number(count), averageResponse };
+  }
+
+  async getAgentValidations(agentIdInput: string | number): Promise<Hex[]> {
+    const { tokenId } = this.parseAgentId(agentIdInput);
+    return await this.chain.getAgentValidations(this.validationRegistry, this.validationRegistryAbi, tokenId);
+  }
+
+  async getValidatorRequests(validatorAddress: string): Promise<Hex[]> {
+    return await this.chain.getValidatorRequests(
+      this.validationRegistry,
+      this.validationRegistryAbi,
+      validatorAddress,
+    );
+  }
+
   getTypedDataChainId(): number {
     if (this.chainType !== "tron") return this.chainId;
     const key = (this.network || "").toLowerCase().split(":").pop() || "nile";
@@ -489,4 +662,56 @@ export class SDK {
     if (!client) return [];
     return client.searchFeedback(cid, filters, options);
   }
+}
+
+export async function signAgentWalletBinding(
+  sdk: SDK,
+  agentId: bigint,
+  newWallet: string,
+  deadline: bigint,
+  signerOverride?: string,
+): Promise<Hex> {
+  const newWalletAddress = sdk.chain.toEvmAddress(newWallet) as Hex;
+  const owner = await sdk.chain.ownerOf(sdk.identityRegistry, sdk.identityRegistryAbi, agentId);
+  const ownerAddress = sdk.chain.toEvmAddress(owner) as Hex;
+  const domain = {
+    name: "ERC8004IdentityRegistry",
+    version: "1",
+    chainId: sdk.getTypedDataChainId(),
+    verifyingContract: sdk.chain.toEvmAddress(sdk.identityRegistry) as Hex,
+  } as const;
+  const types = {
+    AgentWalletSet: [
+      { name: "agentId", type: "uint256" },
+      { name: "newWallet", type: "address" },
+      { name: "owner", type: "address" },
+      { name: "deadline", type: "uint256" },
+    ],
+  } as const;
+  const message = { agentId, newWallet: newWalletAddress, owner: ownerAddress, deadline } as const;
+  const signer = signerOverride ?? sdkSigners.get(sdk);
+  if (!signer) {
+    throw new Error("New wallet signature is required. Provide options.newWalletSigner or options.signature.");
+  }
+
+  if (typeof signer !== "string") throw new TypeError("newWalletSigner must be a private-key string");
+  const normalizedKey = (signer.startsWith("0x") ? signer : `0x${signer}`) as Hex;
+  const account = privateKeyToAccount(normalizedKey);
+  const signerAddress = account.address;
+  const signature = await account.signTypedData({ domain, types, primaryType: "AgentWalletSet", message });
+  if (signerAddress.toLowerCase() !== newWalletAddress.toLowerCase()) {
+    throw new Error(`newWalletSigner address (${signerAddress}) does not match newWallet (${newWalletAddress}).`);
+  }
+
+  const recovered = await recoverTypedDataAddress({
+    domain,
+    types,
+    primaryType: "AgentWalletSet",
+    message,
+    signature,
+  });
+  if (recovered.toLowerCase() !== newWalletAddress.toLowerCase()) {
+    throw new Error(`Signature verification failed: recovered ${recovered}, expected ${newWalletAddress}`);
+  }
+  return signature;
 }

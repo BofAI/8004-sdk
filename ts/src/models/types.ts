@@ -16,6 +16,11 @@ export interface RegistrationResult {
   agentURI: string;
 }
 
+export interface MetadataEntry {
+  metadataKey: string;
+  metadataValue: `0x${string}`;
+}
+
 export interface SetWalletOptions {
   newWalletSigner?: string;
   deadline?: number;
@@ -42,6 +47,10 @@ export interface FeedbackRecord {
   tag1: string;
   tag2: string;
   isRevoked: boolean;
+}
+
+export interface OnChainFeedbackRecord extends FeedbackRecord {
+  feedbackIndex: number;
 }
 
 export interface ReputationSummary {
@@ -74,6 +83,12 @@ export interface ValidationStatus {
   responseHash: `0x${string}`;
   tag: string;
   lastUpdate: number;
+}
+
+export interface ValidationSummary {
+  agentId: string;
+  count: number;
+  averageResponse: number;
 }
 
 export interface AppendResponseParams {
@@ -132,6 +147,7 @@ export interface TxMined<T> {
 }
 
 export interface RegistrationFile {
+  registrationType?: string;
   agentId?: string;
   agentURI?: string;
   walletAddress?: string;
@@ -140,6 +156,7 @@ export interface RegistrationFile {
   description: string;
   image?: string;
   endpoints: Array<{ name: string; endpoint: string; version?: string }>;
+  registrations?: Array<{ agentId: number; agentRegistry: string }>;
   tags: string[];
   metadata: Record<string, unknown>;
   supportedTrust: string[];
