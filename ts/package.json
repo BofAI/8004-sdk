@@ -1,6 +1,6 @@
 {
   "name": "@bankofai/8004-sdk",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "TypeScript SDK for 8004. Supports agent registration, reputation, and validation flows.",
   "type": "module",
   "main": "dist/index.js",
@@ -45,19 +45,19 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bankofai/8004-sdk.git"
+    "url": "git+https://github.com/BofAI/8004-sdk.git"
   },
   "bugs": {
-    "url": "https://github.com/bankofai/8004-sdk/issues"
+    "url": "https://github.com/BofAI/8004-sdk/issues"
   },
-  "homepage": "https://github.com/bankofai/8004-sdk#readme",
+  "homepage": "https://github.com/BofAI/8004-sdk#readme",
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "graphql-request": "^7.2.0",
-    "tronweb": "^6.0.4",
-    "viem": "^2.37.5"
+    "graphql-request": "^7.4.0",
+    "tronweb": "^6.5.1",
+    "viem": "^2.56.8"
   },
   "devDependencies": {
     "@types/node": "^22.13.9",
