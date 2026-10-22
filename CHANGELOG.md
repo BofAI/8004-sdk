@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Pinned TypeScript CI to Node.js `22.23.4`, `24.22.1`, and `26.12.1`,
+  pinned npm publishing to `22.23.4`, and raised the package engine floors to
+  the corresponding security-fixed patch releases.
+
 ## [1.2.0] - 2026-09-20
 
 ### Added
